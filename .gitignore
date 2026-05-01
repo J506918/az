@@ -1,0 +1,7 @@
+node_modules/
+.expo/
+.manus-logs/
+dist/
+build/
+*.log
+.DS_Store
