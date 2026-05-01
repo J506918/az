@@ -380,7 +380,7 @@ class SSHService {
         `echo "___V___" && cat /VERSION 2>/dev/null || echo "unknown"`,
         `echo "___B___" && (getprop ro.build.version.release 2>/dev/null || uname -r)`,
         `echo "___H___" && hostname`,
-        `echo "___A___" && (cd /data/openpilot && python3 -c "from system.hardware import HARDWARE; parts = str(HARDWARE).split('.'); print(parts[3] if len(parts) > 3 else '')" 2>/dev/null || echo 'unknown')`,
+        `echo "___A___" && (cd /data/openpilot && python3 -c "from system.hardware import HARDWARE; print(type(HARDWARE).__name__.lower())" 2>/dev/null || echo "")`,
         `echo "___END___"`,
       ].join('; ');
 
