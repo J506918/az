@@ -371,7 +371,7 @@ class SSHService {
     try {
       const combined = [
         `echo "___T___" && cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo "0"`,
-        `echo "___F___" && (find /sys/class/hwmon -name 'fan*_input' 2>/dev/null | head -1 | xargs cat 2>/dev/null || cat /sys/class/hwmon/hwmon0/fan1_input 2>/dev/null || cat /sys/class/hwmon/hwmon1/fan1_input 2>/dev/null || cat /sys/class/hwmon/hwmon2/fan1_input 2>/dev/null || cat /sys/devices/platform/soc/*/hwmon/hwmon*/fan1_input 2>/dev/null || echo "0")`,
+        `echo "___F___" && (find /sys/class/hwmon -name 'fan*_input' 2>/dev/null | head -1 | while IFS= read -r f; do cat "$f" 2>/dev/null; done || cat /sys/class/hwmon/hwmon0/fan1_input 2>/dev/null || cat /sys/class/hwmon/hwmon1/fan1_input 2>/dev/null || cat /sys/class/hwmon/hwmon2/fan1_input 2>/dev/null || cat /sys/devices/platform/soc/*/hwmon/hwmon*/fan1_input 2>/dev/null || echo "0")`,
         `echo "___U___" && uptime -p 2>/dev/null || uptime`,
         `echo "___M___" && cat /proc/meminfo`,
         `echo "___D___" && df -k /data 2>/dev/null | tail -1 || df -k / | tail -1`,
@@ -510,7 +510,7 @@ class SSHService {
       const busMatch = line.match(/\(Bus\s+(\d+)\)\s+(0x[0-9A-Fa-f]+)\s+\[(\d+)\]:\s*([0-9A-Fa-f ]+)/i);
       if (busMatch) {
         const dataHex = busMatch[4].replace(/\s+/g, '').toUpperCase();
-        onMessage({ channel: `can${busMatch[1]}`, id: busMatch[2].replace('0x','').replace(/^0+/,'').toUpperCase() || '0', data: dataHex, dlc: parseInt(busMatch[3], 10), timestamp: t });
+        onMessage({ channel: `can${busMatch[1]}`, id: (busMatch[2].replace('0x','').replace(/^0+(?=.)/, '') || '0').toUpperCase(), data: dataHex, dlc: parseInt(busMatch[3], 10), timestamp: t });
         return true;
       }
 

@@ -98,7 +98,8 @@ export function parseDeviceArchitecture(modelString: string): DeviceArchitecture
   if (lower === 'mici') return 'mici';
   if (lower === 'neo') return 'neo';
 
-  // Handle Comma 2 (EON platform) — Python class is EonHardware, hardware prop may be 'eon'
+  // Handle Comma 2 (EON platform) — Python class is EonHardware, hardware prop may be 'eon'.
+  // The app uses 'neo' as the architecture key for Comma 2 (matching the legacy board identifier).
   if (lower === 'eon') return 'neo';
 
   // Handle Python class names (e.g. "ticihardware", "eonhardware")
