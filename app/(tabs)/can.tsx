@@ -36,6 +36,7 @@ export default function CanScreen() {
   const [aiModalVisible, setAiModalVisible] = useState(false);
   const [aiResult, setAiResult] = useState<any>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string>("");
 
   const stopCaptureRef = useRef<(() => void) | null>(null);
   const listRef = useRef<FlatList>(null);
@@ -56,17 +57,20 @@ export default function CanScreen() {
 
   const startCapture = async () => {
     if (!sshService.isConnected) return;
+    setStatusMsg("");
     try {
       const stop = await sshService.startCanCapture(
         (msg) => {
+          setStatusMsg("");
           setMessages((prev) => {
             const updated = [...prev, msg];
             return updated.length > 5000 ? updated.slice(-5000) : updated;
           });
         },
         (err) => {
+          // Show as a non-intrusive status rather than an alert
+          setStatusMsg(err);
           console.warn("CAN capture error:", err);
-          setCapturing(false);
         }
       );
       stopCaptureRef.current = stop;
@@ -212,6 +216,14 @@ export default function CanScreen() {
           />
         </View>
       </View>
+
+      {/* Status / No-data message */}
+      {capturing && statusMsg ? (
+        <View style={[styles.statusMsgBar, { backgroundColor: colors.warning + '18', borderColor: colors.warning + '44' }]}>
+          <IconSymbol name="warning" size={14} color={colors.warning} />
+          <Text style={[styles.statusMsgText, { color: colors.warning }]} numberOfLines={2}>{statusMsg}</Text>
+        </View>
+      ) : null}
 
       {/* Column Headers */}
       <View style={[styles.colHeader, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
@@ -534,5 +546,17 @@ const styles = StyleSheet.create({
   signalUnit: {
     fontSize: 11,
     marginTop: 2,
+  },
+  statusMsgBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderBottomWidth: 0.5,
+    gap: 6,
+  },
+  statusMsgText: {
+    fontSize: 11,
+    flex: 1,
   },
 });

@@ -371,7 +371,7 @@ class SSHService {
     try {
       const combined = [
         `echo "___T___" && cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo "0"`,
-        `echo "___F___" && (cat /sys/class/hwmon/hwmon0/fan1_input 2>/dev/null || cat /sys/class/hwmon/hwmon1/fan1_input 2>/dev/null || cat /sys/devices/platform/soc/*/hwmon/hwmon*/fan1_input 2>/dev/null || echo "0")`,
+        `echo "___F___" && (find /sys/class/hwmon -name 'fan*_input' 2>/dev/null | head -1 | xargs cat 2>/dev/null || cat /sys/class/hwmon/hwmon0/fan1_input 2>/dev/null || cat /sys/class/hwmon/hwmon1/fan1_input 2>/dev/null || cat /sys/class/hwmon/hwmon2/fan1_input 2>/dev/null || cat /sys/devices/platform/soc/*/hwmon/hwmon*/fan1_input 2>/dev/null || echo "0")`,
         `echo "___U___" && uptime -p 2>/dev/null || uptime`,
         `echo "___M___" && cat /proc/meminfo`,
         `echo "___D___" && df -k /data 2>/dev/null | tail -1 || df -k / | tail -1`,
@@ -380,7 +380,7 @@ class SSHService {
         `echo "___V___" && cat /VERSION 2>/dev/null || echo "unknown"`,
         `echo "___B___" && (getprop ro.build.version.release 2>/dev/null || uname -r)`,
         `echo "___H___" && hostname`,
-        `echo "___A___" && (cd /data/openpilot && python3 -c "from system.hardware import HARDWARE; print(type(HARDWARE).__name__.lower())" 2>/dev/null || echo "")`,
+        `echo "___A___" && (getprop ro.hardware 2>/dev/null | grep -E '^(tici|tizi|mici|neo|eon)$' || PYTHONPATH=/data/openpilot python3 -c "from system.hardware import HARDWARE; print(type(HARDWARE).__name__.lower())" 2>/dev/null || cat /proc/device-tree/model 2>/dev/null | tr -d '\\0' | head -c 64 || echo "")`,
         `echo "___END___"`,
       ].join('; ');
 
@@ -490,7 +490,7 @@ class SSHService {
     return () => { running = false; };
   }
 
-  // ─── CAN Data Capture (using openpilot dump.py) ────────────────────────────
+  // ─── CAN Data Capture (using openpilot dump.py / candump) ───────────────────
 
   async startCanCapture(
     onMessage: (msg: CanMessage) => void,
@@ -501,114 +501,131 @@ class SSHService {
     }
 
     let running = true;
-    let messageCount = 0;
+
+    // Parse a CAN line and call onMessage; returns true if a message was emitted
+    const parseLine = (line: string, idx: number): boolean => {
+      const t = Date.now() + idx;
+
+      // openpilot dump.py format: "(Bus N) 0xABC [DLC]: XX XX XX XX"
+      const busMatch = line.match(/\(Bus\s+(\d+)\)\s+(0x[0-9A-Fa-f]+)\s+\[(\d+)\]:\s*([0-9A-Fa-f ]+)/i);
+      if (busMatch) {
+        const dataHex = busMatch[4].replace(/\s+/g, '').toUpperCase();
+        onMessage({ channel: `can${busMatch[1]}`, id: busMatch[2].replace('0x','').replace(/^0+/,'').toUpperCase() || '0', data: dataHex, dlc: parseInt(busMatch[3], 10), timestamp: t });
+        return true;
+      }
+
+      // candump format: "can0  123   [8]  01 02 03 04 05 06 07 08" or "can0  123#0102..."
+      const candumpSpaceMatch = line.match(/^\s*(\S+)\s+([0-9A-Fa-f]+)\s+\[(\d+)\]\s+([0-9A-Fa-f ]+)/);
+      if (candumpSpaceMatch) {
+        const dataHex = candumpSpaceMatch[4].replace(/\s+/g, '').toUpperCase();
+        onMessage({ channel: candumpSpaceMatch[1], id: candumpSpaceMatch[2].toUpperCase(), data: dataHex, dlc: parseInt(candumpSpaceMatch[3], 10), timestamp: t });
+        return true;
+      }
+      const candumpHashMatch = line.match(/^\s*(\S+)\s+([0-9A-Fa-f]+)#([0-9A-Fa-f]*)/);
+      if (candumpHashMatch) {
+        onMessage({ channel: candumpHashMatch[1], id: candumpHashMatch[2].toUpperCase(), data: candumpHashMatch[3].toUpperCase(), dlc: Math.floor(candumpHashMatch[3].length / 2), timestamp: t });
+        return true;
+      }
+
+      // Generic hex format: "can0 0x123 AABBCCDD"
+      const hexMatch = line.match(/^(\S+)\s+(0x[0-9A-Fa-f]+)\s+([0-9A-Fa-f]+)/);
+      if (hexMatch) {
+        onMessage({ channel: hexMatch[1], id: hexMatch[2].replace('0x','').toUpperCase(), data: hexMatch[3].toUpperCase(), dlc: Math.floor(hexMatch[3].length / 2), timestamp: t });
+        return true;
+      }
+
+      // cereal/dump.py format: "address: NNN  dat: 'HEXSTR'  src: N  bus: N"
+      const cerealMatch = line.match(/address:\s*(\d+).*dat:\s*["']?([0-9A-Fa-f]+)/i);
+      const busCerealMatch = line.match(/bus:\s*(\d+)/i);
+      if (cerealMatch) {
+        const decId = parseInt(cerealMatch[1], 10);
+        onMessage({ channel: busCerealMatch ? `can${busCerealMatch[1]}` : 'can0', id: decId.toString(16).toUpperCase(), data: cerealMatch[2].toUpperCase(), dlc: Math.floor(cerealMatch[2].length / 2), timestamp: t });
+        return true;
+      }
+
+      // Simple "ID HEXDATA" format
+      const simpleMatch = line.match(/^\s*([0-9A-Fa-f]{1,8})\s+([0-9A-Fa-f]{2,16})\s*$/);
+      if (simpleMatch) {
+        const decId = parseInt(simpleMatch[1], 16);
+        onMessage({ channel: 'can0', id: decId.toString(16).toUpperCase(), data: simpleMatch[2].toUpperCase(), dlc: Math.floor(simpleMatch[2].length / 2), timestamp: t });
+        return true;
+      }
+
+      return false;
+    };
 
     const poll = async () => {
       while (running && this.connected) {
         try {
-          // Try multiple CAN capture methods
           let output = '';
-          try {
-            // Method 1: openpilot dump.py
-            output = await this.exec(
-              `timeout 1 python3 /data/openpilot/selfdrive/debug/dump.py can 2>/dev/null | head -30`
-            );
-          } catch (e) {
-            // Method 2: candump
+          let hasRealData = false;
+
+          // Method 1: openpilot dump.py — try multiple known paths
+          const dumpPaths = [
+            '/data/openpilot/selfdrive/debug/dump.py',
+            '/data/openpilot/tools/lib/logreader.py',
+          ];
+          for (const dp of dumpPaths) {
+            if (!running) break;
             try {
-              output = await this.exec(`timeout 0.5 candump -n 20 any 2>/dev/null`);
-            } catch (e2) {
-              // Method 3: ip link show and try socketcan
-              try {
-                output = await this.exec(
-                  `ip link show | grep can || echo "NO_CAN"`
-                );
-              } catch (e3) {
-                output = '';
+              const out = await this.exec(
+                `timeout 2 python3 "${dp}" can 2>/dev/null | head -50`
+              );
+              if (out && out.trim() && !out.toLowerCase().includes('error') && !out.toLowerCase().includes('traceback') && out.trim() !== 'NO_CAN') {
+                output = out;
+                hasRealData = true;
+                break;
               }
-            }
+            } catch (_) {}
           }
 
-          // If no output from any method, no real CAN data available
-          if (!output || output.trim() === '' || output.trim() === 'NO_CAN') {
-            // No real data - show 0
-            onMessage({
-              channel: 'can0',
-              id: '0',
-              data: '00',
-              dlc: 1,
-              timestamp: Date.now(),
-            });
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            continue;
+          // Method 2: cereal messaging direct Python snippet
+          if (!hasRealData && running) {
+            try {
+              const cereallOut = await this.exec(
+                `timeout 2 python3 -c "
+import sys, time
+sys.path.insert(0,'/data/openpilot')
+try:
+  import cereal.messaging as messaging
+  sm = messaging.SubMaster(['can'])
+  sm.update(1500)
+  for msg in sm['can']:
+    data = bytes(msg.dat).hex().upper()
+    print(f'(Bus {msg.src}) 0x{msg.address:03X} [{msg.dat.size}]: {\" \".join([data[i:i+2] for i in range(0,len(data),2)])}')
+except Exception as e:
+  print('ERR:' + str(e), file=sys.stderr)
+" 2>/dev/null | head -50`
+              );
+              if (cereallOut && cereallOut.trim() && !cereallOut.includes('ERR:') && cereallOut.trim() !== '') {
+                output = cereallOut;
+                hasRealData = true;
+              }
+            } catch (_) {}
           }
 
-          if (output && output.trim() !== 'NO_CAN_TOOL' && output.trim() !== 'NO_CAN') {
-            const lines = output.split('\n').filter(Boolean);
-            lines.forEach((line, idx) => {
-              // dump.py output format: various, try to parse
-              // candump format: interface ID#DATA
-              const candumpMatch = line.match(/^\s*(\S+)\s+([0-9A-Fa-f]+)#([0-9A-Fa-f]*)/);
-              // Generic hex format: channel 0xID data
-              const hexMatch = line.match(/^(\S+)\s+(0x[0-9A-Fa-f]+)\s+([0-9A-Fa-f]*)/);
-              // dump.py cereal format: parse address and data from cereal output
-              const cerealMatch = line.match(/address:\s*(\d+).*dat:\s*["']([0-9A-Fa-f]+)/i);
-              // Simple numeric format: ID DATA
-              const simpleMatch = line.match(/^\s*(\d+)\s+([0-9A-Fa-f]+)\s*$/);
-
-              if (candumpMatch) {
-                onMessage({
-                  channel: candumpMatch[1],
-                  id: candumpMatch[2].toUpperCase(),
-                  data: candumpMatch[3].toUpperCase(),
-                  dlc: Math.floor(candumpMatch[3].length / 2),
-                  timestamp: Date.now() + idx,
-                });
-              } else if (hexMatch) {
-                onMessage({
-                  channel: hexMatch[1],
-                  id: hexMatch[2].replace('0x', '').toUpperCase(),
-                  data: hexMatch[3].toUpperCase(),
-                  dlc: Math.floor(hexMatch[3].length / 2),
-                  timestamp: Date.now() + idx,
-                });
-              } else if (cerealMatch) {
-                const decId = parseInt(cerealMatch[1], 10);
-                onMessage({
-                  channel: 'can0',
-                  id: decId.toString(16).toUpperCase(),
-                  data: cerealMatch[2].toUpperCase(),
-                  dlc: Math.floor(cerealMatch[2].length / 2),
-                  timestamp: Date.now() + idx,
-                });
-              } else if (simpleMatch) {
-                const decId = parseInt(simpleMatch[1], 10);
-                onMessage({
-                  channel: 'can0',
-                  id: decId.toString(16).toUpperCase(),
-                  data: simpleMatch[2].toUpperCase(),
-                  dlc: Math.floor(simpleMatch[2].length / 2),
-                  timestamp: Date.now() + idx,
-                });
-              } else if (line.trim().length > 5) {
-                // Raw line fallback — show as-is
-                onMessage({
-                  channel: 'raw',
-                  id: '---',
-                  data: line.trim().substring(0, 40),
-                  dlc: 0,
-                  timestamp: Date.now() + idx,
-                });
+          // Method 3: candump (SocketCAN)
+          if (!hasRealData && running) {
+            try {
+              const candumpOut = await this.exec(`timeout 1 candump -n 30 any 2>/dev/null`);
+              if (candumpOut && candumpOut.trim() && !candumpOut.trim().startsWith('No')) {
+                output = candumpOut;
+                hasRealData = true;
               }
-            });
-          } else if (output && output.trim() === 'NO_CAN_TOOL') {
-            if (running) onError?.('No CAN capture tool found on device. Requires openpilot dump.py or candump.');
-            running = false;
+            } catch (_) {}
+          }
+
+          if (hasRealData && output) {
+            const lines = output.split('\n').filter(l => l.trim().length > 0);
+            lines.forEach((line, idx) => parseLine(line, idx));
+          } else {
+            // No real CAN data available — report status but don't emit fake messages
+            if (running) onError?.('暂无 CAN 数据（车辆未接入或 openpilot 服务未运行）');
           }
         } catch (err: any) {
           if (running) onError?.(err.message);
         }
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
     };
 
