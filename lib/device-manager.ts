@@ -85,23 +85,35 @@ export function getDeviceInfo(architecture: DeviceArchitecture): DeviceInfo {
 /**
  * Parse device architecture from model string
  * Example: "comma tici" -> "tici"
+ * Handles: ro.hardware values, Python class names, device-tree model strings
  */
 export function parseDeviceArchitecture(modelString: string): DeviceArchitecture {
   if (!modelString) return 'unknown';
 
   const lower = modelString.toLowerCase().trim();
 
-  // Handle exact matches first (from getprop ro.hardware or device-tree/model)
+  // Handle exact hardware property values (getprop ro.hardware)
   if (lower === 'tici') return 'tici';
   if (lower === 'tizi') return 'tizi';
   if (lower === 'mici') return 'mici';
   if (lower === 'neo') return 'neo';
 
-  // Handle partial matches (from Python API or other sources)
-  if (lower.includes('tici') && !lower.includes('tizi')) return 'tici';
+  // Handle Comma 2 (EON platform) — Python class is EonHardware, hardware prop may be 'eon'.
+  // The app uses 'neo' as the architecture key for Comma 2 (matching the legacy board identifier).
+  if (lower === 'eon') return 'neo';
+
+  // Handle Python class names (e.g. "ticihardware", "eonhardware")
+  if (lower.includes('tizihardware')) return 'tizi';
+  if (lower.includes('ticihardware')) return 'tici';
+  if (lower.includes('micihardware')) return 'mici';
+  if (lower.includes('eonhardware')) return 'neo';
+
+  // Handle partial keyword matches (from Python API class name or device-tree)
   if (lower.includes('tizi')) return 'tizi';
+  if (lower.includes('tici')) return 'tici';
   if (lower.includes('mici')) return 'mici';
   if (lower.includes('neo')) return 'neo';
+  if (lower.includes('eon')) return 'neo'; // comma 2 EON platform
 
   return 'unknown';
 }

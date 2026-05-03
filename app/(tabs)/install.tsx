@@ -363,12 +363,13 @@ export default function InstallScreen() {
       setOpMessage(t("install.downloading"));
       setOpProgress(2);
 
-      // Remove old openpilot and clone new branch directly
-      // Use git's progress output redirected to a file for real-time tracking
+      // Remove old openpilot and clone new branch directly.
+      // GIT_TERMINAL_PROMPT=0 prevents git from hanging waiting for credentials.
+      // timeout 600 limits the clone to 10 minutes to avoid indefinite hangs.
       const cloneCmd = [
         `rm -rf /tmp/cc_git_progress`,
         `rm -rf /data/openpilot_new`,
-        `git clone --depth 1 --single-branch --progress --branch "${branch.name}" "${repoUrl}" /data/openpilot_new 2>/tmp/cc_git_progress`,
+        `GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -o BatchMode=yes" timeout 600 git clone --depth 1 --single-branch --progress --branch "${branch.name}" "${repoUrl}" /data/openpilot_new 2>/tmp/cc_git_progress`,
         `echo CLONE_OK`,
       ].join(" && ");
 
@@ -380,8 +381,8 @@ export default function InstallScreen() {
 
       if (!cloneResult.includes("CLONE_OK")) {
         // Read error details
-        const errLog = await sshService.exec(`cat /tmp/cc_git_progress 2>/dev/null | tail -5`);
-        throw new Error(`克隆失败：${errLog || "未知错误"}`);
+        const errLog = await sshService.exec(`cat /tmp/cc_git_progress 2>/dev/null | tail -10`);
+        throw new Error(`克隆失败：${errLog || "未知错误（请检查网络或仓库地址）"}`);
       }
 
       setOpProgress(85);

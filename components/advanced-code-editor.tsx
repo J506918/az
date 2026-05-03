@@ -235,30 +235,42 @@ export function AdvancedCodeEditor({
   const isPython = language === 'py' || language === 'python';
   const isJS = ['js', 'ts', 'tsx', 'jsx'].includes(language);
 
+  // Consistent line height and padding shared between line numbers and editor
+  const LINE_HEIGHT = 20;
+  const EDITOR_PADDING_TOP = 12;
+  const EDITOR_PADDING_H = 8;
+
   // 更新行数
   useEffect(() => {
     setLines(value.split('\n'));
   }, [value]);
 
-  // 防抖语法检查
+  // 防抖语法检查 — Python uses SSH if connected, otherwise falls back to client-side bracket check
   const scheduleLint = useCallback((code: string) => {
     if (lintTimerRef.current) clearTimeout(lintTimerRef.current);
     lintTimerRef.current = setTimeout(async () => {
-      if (isPython && sshService.isConnected) {
-        setChecking(true);
-        try {
-          const results = await checkPythonSyntaxViaSSH(code, filePath);
-          setDiagnostics(results);
-        } finally {
-          setChecking(false);
+      if (isPython) {
+        if (sshService.isConnected) {
+          setChecking(true);
+          try {
+            const results = await checkPythonSyntaxViaSSH(code, filePath);
+            setDiagnostics(results);
+          } catch {
+            // SSH check failed — fall through to no diagnostics
+            setDiagnostics([]);
+          } finally {
+            setChecking(false);
+          }
+        } else {
+          // No SSH — run bracket balance check as a basic fallback
+          setDiagnostics(checkBracketBalance(code));
         }
       } else if (isJS) {
-        const results = checkBracketBalance(code);
-        setDiagnostics(results);
+        setDiagnostics(checkBracketBalance(code));
       } else {
         setDiagnostics([]);
       }
-    }, 800); // 800ms debounce
+    }, 600); // 600ms debounce for snappier feedback
   }, [isPython, isJS, filePath]);
 
   useEffect(() => {
@@ -268,8 +280,9 @@ export function AdvancedCodeEditor({
     };
   }, [value, scheduleLint]);
 
-  const lineNumbers = lines.map((_, i) => (i + 1).toString());
-  const maxLineNumberWidth = Math.max(lineNumbers.length.toString().length * 8 + 12, 28);
+  // Width for line number gutter: enough digits + padding
+  const numDigits = lines.length.toString().length;
+  const maxLineNumberWidth = Math.max(numDigits * 9 + 16, 32);
 
   const errorLines = new Set(diagnostics.map(d => d.line));
 
@@ -290,10 +303,11 @@ export function AdvancedCodeEditor({
                 width: maxLineNumberWidth,
                 backgroundColor: colors.surface,
                 borderRightColor: colors.border,
+                paddingTop: EDITOR_PADDING_TOP,
               },
             ]}
           >
-            {lineNumbers.map((num, idx) => {
+            {lines.map((_, idx) => {
               const lineNum = idx + 1;
               const hasError = errorLines.has(lineNum);
               return (
@@ -303,12 +317,12 @@ export function AdvancedCodeEditor({
                     styles.lineNumber,
                     {
                       color: hasError ? colors.error : colors.muted,
-                      height: 20,
-                      lineHeight: 20,
+                      height: LINE_HEIGHT,
+                      lineHeight: LINE_HEIGHT,
                     },
                   ]}
                 >
-                  {num}
+                  {lineNum}
                 </Text>
               );
             })}
@@ -316,14 +330,15 @@ export function AdvancedCodeEditor({
 
           {/* 代码编辑区 */}
           <View style={styles.editorContent}>
-            {/* 错误行高亮 */}
+            {/* 错误行高亮 (positioned relative to editorContent top) */}
             {diagnostics.map((d, idx) => (
               <View
                 key={idx}
                 style={[
                   styles.errorLineHighlight,
                   {
-                    top: (d.line - 1) * 20 + 12, // paddingTop offset
+                    top: EDITOR_PADDING_TOP + (d.line - 1) * LINE_HEIGHT,
+                    height: LINE_HEIGHT,
                     backgroundColor:
                       d.type === 'error'
                         ? colors.error + '22'
@@ -374,10 +389,10 @@ export function AdvancedCodeEditor({
           <View style={styles.statusRow}>
             <View style={[styles.statusDot, { backgroundColor: colors.success || '#22C55E' }]} />
             <Text style={[styles.statusText, { color: colors.muted }]}>
-              {isPython && sshService.isConnected
-                ? '语法正确'
+              {isPython
+                ? (sshService.isConnected ? '语法正确' : `括号匹配正常 · ${lines.length} 行`)
                 : isJS
-                ? '括号匹配正常'
+                ? `括号匹配正常 · ${lines.length} 行`
                 : `${lines.length} 行`}
             </Text>
           </View>
@@ -432,7 +447,7 @@ const styles = StyleSheet.create({
     minHeight: '100%',
   },
   lineNumbers: {
-    paddingTop: 12,
+    // paddingTop is set dynamically to match EDITOR_PADDING_TOP
     paddingBottom: 12,
     paddingHorizontal: 4,
     borderRightWidth: 1,
@@ -442,6 +457,7 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
     textAlign: 'right',
     paddingHorizontal: 4,
+    // height and lineHeight are set dynamically to match LINE_HEIGHT
   },
   editorContent: {
     flex: 1,
@@ -451,14 +467,16 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    height: 20,
+    // height is set dynamically to match LINE_HEIGHT
     zIndex: 0,
   },
   editor: {
     flex: 1,
-    padding: 12,
+    paddingTop: 12,      // must match EDITOR_PADDING_TOP
+    paddingBottom: 12,
+    paddingHorizontal: 8,
     fontSize: 13,
-    lineHeight: 20,
+    lineHeight: 20,      // must match LINE_HEIGHT
     zIndex: 1,
   },
   statusBar: {
